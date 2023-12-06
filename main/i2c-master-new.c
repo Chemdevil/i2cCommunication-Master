@@ -2,59 +2,86 @@
 #include <string.h>
 #include "esp_log.h"
 #include "driver/i2c.h"
+#include "regex.h"
 
 static const char *TAG = "i2c-master";
 
-#define DELAY_MS 1000
-#define TIMEOUT_MS 1000
-#define I2C_MASTER_SCL_IO 22        /*!< gpio number for I2C master clock */
-#define I2C_MASTER_SDA_IO 21        /*!< gpio number for I2C master data  */
-#define I2C_MASTER_FREQ_HZ 400000   /*!< I2C master clock frequency */
-#define I2C_MASTER_TX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
-#define I2C_MASTER_RX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
-#define SLAVE_ADDRESS1 0x32
-#define SLAVE_ADDRESS2 0x27
-#define I2C_MASTER_RX_BUF_LEN 128
-#define WRITE_BIT I2C_MASTER_WRITE /*!< I2C master write */
-#define READ_BIT I2C_MASTER_READ   /*!< I2C master read */
-#define ACK_CHECK_EN 0x1           /*!< I2C master will check ack from slave*/
-#define ACK_CHECK_DIS 0x0          /*!< I2C master will not check ack from slave */
-#define ACK_VAL 0x0                /*!< I2C ack value */
-#define NACK_VAL 0x1               /*!< I2C nack value */
-SemaphoreHandle_t print_mux = NULL;
+#define I2C_MASTER_TX_BUF_LEN 255
+#define I2C_MASTER_SCL_IO 22               /*!< gpio number for I2C master clock */
+#define I2C_MASTER_SDA_IO 21               /*!< gpio number for I2C master data  */
+#define I2C_MASTER_FREQ_HZ 400000        /*!< I2C master clock frequency */
+#define I2C_MASTER_TX_BUF_DISABLE 0                           /*!< I2C master doesn't need buffer */
+#define I2C_MASTER_RX_BUF_DISABLE 0                           /*!< I2C master doesn't need buffer */
+#define SLAVE_ADDRESS 0x0A
+#define ESP_OTHER_SLAVE_ADDR 0x0B
+#define I2C_MASTER_RX_BUF_LEN 255
+#define WRITE_BIT I2C_MASTER_WRITE              /*!< I2C master write */
+#define READ_BIT I2C_MASTER_READ                /*!< I2C master read */
+#define ACK_CHECK_EN 0x1                        /*!< I2C master will check ack from slave*/
+#define ACK_CHECK_DIS 0x0                       /*!< I2C master will not check ack from slave */
+#define ACK_VAL 0x0                             /*!< I2C ack value */
+#define NACK_VAL 0x1                            /*!< I2C nack value */
+
 int i2c_master_port = 0;
 
-// static esp_err_t i2c_master_read_slave(i2c_port_t i2c_num, uint8_t *data_rd, size_t size)
-// {
-//     if (size == 0)
-//     {
-//         return ESP_OK;
-//     }
-//     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-//     i2c_master_start(cmd);
-//     i2c_master_write_byte(cmd, (SLAVE_ADDRESS << 1) | READ_BIT, ACK_CHECK_EN);
-//     if (size > 1)
-//     {
-//         i2c_master_read(cmd, data_rd, size - 1, ACK_VAL);
-//     }
-//     i2c_master_read_byte(cmd, data_rd + size - 1, NACK_VAL);
-//     i2c_master_stop(cmd);
-//     esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, pdMS_TO_TICKS(100));
-//     i2c_cmd_link_delete(cmd);
-//     return ret;
-// }
-
-static void copy_array(uint8_t *dest, uint16_t *source, int len)
+static esp_err_t i2c_slave_init(void)
 {
-    for (size_t i = 0; i < len; i++)
-    {
-        dest[i] = source[i];
+  
+    i2c_config_t conf_slave = {
+    .sda_io_num = I2C_MASTER_SDA_IO,          // select GPIO specific to your project
+    .sda_pullup_en = GPIO_PULLUP_ENABLE,
+    .scl_io_num = I2C_MASTER_SCL_IO,          // select GPIO specific to your project
+    .scl_pullup_en = GPIO_PULLUP_ENABLE,
+    .mode = I2C_MODE_SLAVE,
+    .slave.addr_10bit_en = 0,
+    .slave.slave_addr = ESP_OTHER_SLAVE_ADDR,      // address of your project
+    .clk_flags = 0,
+    };
+    esp_err_t err = i2c_param_config(i2c_master_port, &conf_slave);
+    if (err != ESP_OK) {
+        return err;
     }
+    return i2c_driver_install(i2c_master_port, conf_slave.mode, I2C_MASTER_RX_BUF_LEN, I2C_MASTER_TX_BUF_LEN, 0);
 }
+
+int useRegex(char* textToCheck) {
+    regex_t compiledRegex;
+    int reti;
+    int actualReturnValue = -1;
+    char messageBuffer[100];
+    size_t nmatch = 1;
+    regmatch_t pmatch[1];
+
+    /* Compile regular expression */
+    reti = regcomp(&compiledRegex, "^[0-9]+-\\[[0-9]+,[0-9]+,[0-9]+\\]$", REG_EXTENDED | REG_ICASE);
+    if (reti) {
+        // fprintf(stderr, "Could not compile regex\n");
+        return -2;
+    }
+
+    /* Execute compiled regular expression */
+    reti = regexec(&compiledRegex, textToCheck,nmatch, pmatch, 0);
+    if (!reti) {
+        // puts("Match");
+        actualReturnValue = 0;
+    } else if (reti == REG_NOMATCH) {
+        // puts("No match");
+        actualReturnValue = 1;
+    } else {
+        // regerror(reti, &compiledRegex, messageBuffer, sizeof(messageBuffer));
+        // fprintf(stderr, "Regex match failed: %s\n", messageBuffer);
+        actualReturnValue = -3;
+    }
+
+    /* Free memory allocated to the pattern buffer by regcomp() */
+    regfree(&compiledRegex);
+    return actualReturnValue;
+}
+
 
 static esp_err_t i2c_master_init(void)
 {
-
+  
     i2c_config_t conf = {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = I2C_MASTER_SDA_IO,
@@ -62,81 +89,154 @@ static esp_err_t i2c_master_init(void)
         .scl_io_num = I2C_MASTER_SCL_IO,
         .scl_pullup_en = GPIO_PULLUP_ENABLE,
         .master.clk_speed = I2C_MASTER_FREQ_HZ,
-        .clk_flags = 0,
-        /*!< Optional, you can use I2C_SCLK_SRC_FLAG_* flags to choose i2c source clock here. */
+        // .clk_flags = 0,          /*!< Optional, you can use I2C_SCLK_SRC_FLAG_* flags to choose i2c source clock here. */
     };
     esp_err_t err = i2c_param_config(i2c_master_port, &conf);
-    if (err != ESP_OK)
-    {
+    if (err != ESP_OK) {
         return err;
     }
     return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
 }
 
-// static esp_err_t i2c_master_send(uint8_t message[], int len)
-// {
-//     // ESP_LOGI(TAG, "Sending Message = %s", message);
+static esp_err_t i2c_master_read_slave(i2c_port_t i2c_num, uint8_t *data_rd, size_t size)
+{
+    if (size == 0)
+    {
+        return ESP_OK;
+    }
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (SLAVE_ADDRESS << 1) | READ_BIT, ACK_CHECK_EN);
+    if (size > 1)
+    {
+        i2c_master_read(cmd, data_rd, size - 1, ACK_VAL);
+    }
+    i2c_master_read_byte(cmd, data_rd + size - 1, NACK_VAL);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
 
-//     esp_err_t ret;
-//     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-//     i2c_master_start(cmd);
-//     i2c_master_write_byte(cmd, SLAVE_ADDRESS << 1 | WRITE_BIT, ACK_CHECK_EN);
-//     i2c_master_write(cmd, message, len, ACK_CHECK_EN);
-//     i2c_master_stop(cmd);
+static esp_err_t i2c_master_send(uint8_t message[], int len)
+{
+    // ESP_LOGI(TAG, "Sending Message = %s", message);   
+    
+    esp_err_t ret; 
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();    
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, SLAVE_ADDRESS << 1 | WRITE_BIT, ACK_CHECK_EN);
+    i2c_master_write(cmd, message, len, ACK_CHECK_EN);
+    i2c_master_stop(cmd);
+    
+    ret = i2c_master_cmd_begin(i2c_master_port, cmd, 1000 / portTICK_PERIOD_MS);
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+u_int8_t *messageParser(char *data) {
+    static uint8_t c[3] = {-1, -1, -1};
+    int startArrayIndex = 0;
+    int endArrayIndex = 0;
+    for (int i = 0; i < strlen(data); i++) {
+        if (data[i] == '[') {
+            startArrayIndex = i + 1;
+        } else if (data[i] == ']') {
+            endArrayIndex = i;
+            break;
+        }
+    }
+    char substring[endArrayIndex - startArrayIndex];
+    int start = 0;
+    strncpy(substring, data + startArrayIndex, endArrayIndex - startArrayIndex);
+    char *token = strtok(substring, ",");
+    start = 0;
+    while (token != NULL) {
+        c[start] = atoi(token);
+        token = strtok(NULL, ",");
+        start++;
+    }
+    return c;
 
-//     ret = i2c_master_cmd_begin(i2c_master_port, cmd, pdMS_TO_TICKS(100));
-//     i2c_cmd_link_delete(cmd);
-//     return ret;
-// }
+}
 
-static void read_Write_Data(uint8_t device_address,const uint8_t* write_buffer, uint8_t* read_buffer){
-    i2c_master_write_read_device(i2c_master_port, 
-        device_address, 
-        write_buffer, 
-        12, 
-        read_buffer, 
-        I2C_MASTER_RX_BUF_LEN, 
-        pdMS_TO_TICKS(TIMEOUT_MS));
-        ESP_LOG_BUFFER_CHAR(TAG, read_buffer, 12);
+void swapCounter(uint8_t *old, uint8_t *new, uint8_t size) {
+    uint8_t temp[size];
+    for (int index = 0; index < (size); index++) {
+        temp[index] = old[index];
+        old[index] = new[index];
+        new[index] = temp[index];
+    }
+}
+
+uint8_t *vectorcalculateRecvTimeStamp(u_int8_t *recvTimeStamp, u_int8_t *counter, u_int8_t size) {
+    for (int i = 0; i < size; i++) {
+        counter[i] = (recvTimeStamp[i] > counter[i]) ? recvTimeStamp[i] : counter[i];
+    }
+    return counter;
+}
+
+uint8_t *vector_event(int processId, uint8_t *counter) {
+    counter[processId] += 1;
+    // char *localtimeString = vectorlocalTime(counter);
+    // printf("Vector Clock = {[%d,%d,%d]}, LocalTime:%s", counter[0], counter[1], counter[2], localtimeString);
+    return counter;
+}
+
+u_int8_t *vector_send_Message(uint8_t processId, uint8_t *counter) {
+    counter[processId] += 1;
+    char sendMessageData[255];
+    sprintf(sendMessageData, "%d-[%d,%d,%d]",processId, counter[0], counter[1], counter[2]);
+    size_t len = strlen(sendMessageData);
+    uint8_t arr[len];
+    memcpy(arr, sendMessageData, len);
+    // uint8_t off_command[sizeof(sendMessageData)] = (uint8_t)atoi(sendMessageData);
+    ESP_ERROR_CHECK(i2c_master_init());
+    // const uint8_t off_command[] = "1-[255,255,255]";
+    i2c_master_send(arr, sizeof(arr));
+    ESP_ERROR_CHECK(i2c_driver_delete(i2c_master_port));
+    return counter;
+}
+
+u_int8_t *vector_receive_Message(uint8_t processId, uint8_t *counter) {
+    uint8_t  received_data[I2C_MASTER_RX_BUF_LEN] = {0};
+    ESP_ERROR_CHECK(i2c_slave_init());
+    i2c_slave_read_buffer(i2c_master_port, received_data, I2C_MASTER_RX_BUF_LEN, 100 / portTICK_PERIOD_MS);
+    char *str = (char *)received_data;
+    if(useRegex(str)==0){
+        ESP_LOGI(TAG,"Received Data on regex:%s",str);
+        uint8_t *receiveMessageData;
+        receiveMessageData = messageParser(str);
+        counter = vectorcalculateRecvTimeStamp(receiveMessageData, counter, 3);
+    }
+    ESP_ERROR_CHECK(i2c_driver_delete(i2c_master_port));
+    return counter;
 }
 
 void app_main(void)
 {
-    uint8_t command[12];
-    uint8_t command_1[12] = "0b110";
-    uint8_t command_2[12] = "0b111";
-    uint8_t rx_data[I2C_MASTER_RX_BUF_LEN]={0};
-    ESP_ERROR_CHECK(i2c_master_init());
-    ESP_LOGI(TAG, "I2C initialized successfully");
-    // CSMA CA channel
-    while (1)
+    // const uint8_t  on_command[] = "0-[1,1,1]";
+    // const uint8_t  off_command[] = "LED_OFFFFFFFFFFFFFFFFFF";
+    uint8_t counter[3] ={0,0,0}; 
+    int pid = 0;
+
+    while(1)
     {
-        // i2c_master_write_read_device(i2c_master_port, 
-        // 0x32, 
-        // &command_r, 
-        // sizeof(command_r), 
-        // rx_data, 
-        // I2C_MASTER_RX_BUF_LEN, 
-        // pdMS_TO_TICKS(TIMEOUT_MS));
-        // ESP_LOG_BUFFER_CHAR(TAG, rx_data, 8);
-        // vTaskDelay(pdMS_TO_TICKS(DELAY_MS));
-        // bzero(rx_data,I2C_MASTER_RX_BUF_LEN);
-        // vTaskDelay(pdMS_TO_TICKS(DELAY_MS));
-        // i2c_master_write_read_device(i2c_master_port, 
-        // 0x31, 
-        // &command_r, 
-        // sizeof(command_r), 
-        // rx_data, 
-        // I2C_MASTER_RX_BUF_LEN, 
-        // pdMS_TO_TICKS(TIMEOUT_MS));
-        // ESP_LOG_BUFFER_CHAR(TAG, rx_data, 8);
-        // vTaskDelay(pdMS_TO_TICKS(DELAY_MS));
-        // bzero(rx_data,I2C_MASTER_RX_BUF_LEN);
-        read_Write_Data(SLAVE_ADDRESS1, &command_1, rx_data);
-        bzero(rx_data,I2C_MASTER_RX_BUF_LEN);
-        vTaskDelay(pdMS_TO_TICKS(DELAY_MS));
-        read_Write_Data(SLAVE_ADDRESS2, &command_2, rx_data);
-        bzero(rx_data,I2C_MASTER_RX_BUF_LEN);
-        vTaskDelay(pdMS_TO_TICKS(DELAY_MS));
+        swapCounter(counter,vector_send_Message(pid,counter),3);
+        swapCounter(counter, vector_receive_Message(pid, counter), 3);
+        
+        // ESP_ERROR_CHECK(i2c_master_init());
+        // i2c_master_send(on_command, sizeof(on_command));
+        // ESP_ERROR_CHECK(i2c_driver_delete(i2c_master_port)); 
+        // vTaskDelay(100/portTICK_PERIOD_MS);
+        // ESP_ERROR_CHECK(i2c_slave_init());
+        // i2c_slave_read_buffer(i2c_master_port, received_data, I2C_MASTER_RX_BUF_LEN, 100 / portTICK_PERIOD_MS);
+        // char *str = (char *)received_data;
+        // if(useRegex(str)==0){
+        // ESP_LOGI(TAG,"Received Data on regex check:%s",received_data);
+        // }
+        // ESP_ERROR_CHECK(i2c_driver_delete(i2c_master_port));     
+        // memset(received_data, 0, I2C_MASTER_RX_BUF_LEN);
+        // vTaskDelay(100/portTICK_PERIOD_MS);
     }
+    
 }
